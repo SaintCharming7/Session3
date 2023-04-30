@@ -1,0 +1,412 @@
+#Session 3
+#
+###
+library(quantmod)
+library(PerformanceAnalytics)
+#install.packages("dygraphs")
+#remove.packages("rlang")
+#install.packages("rlang")
+library(rlang)
+library(dygraphs)
+library(corrplot)
+library(RColorBrewer)
+library(Hmisc)
+library(ggplot2)
+library(gridExtra)
+library(tidyquant)
+#install.packages("ggrepel")
+library(ggrepel)
+library(tidyverse)
+library(zoo)
+library(dplyr)
+library(xts)
+#install.packages("PortfolioAnalytics")
+library(PortfolioAnalytics)
+#install.packages("timetk")
+library(timetk)
+
+
+# specially designed background for ggplot(s)
+theme_set(
+  theme_minimal() +
+    theme(panel.grid.major = element_line(color = "gray88", size = 0.5),
+          panel.grid.major.x = element_blank(),
+          panel.grid.minor = element_blank(),
+          line = element_blank())
+)
+
+#we use the getSymbols code to download data from Yahoo! Finance
+
+jp <- getSymbols("JPM", src = "yahoo", from = "2013-01-01", to = "2023-03-31", auto.assign = FALSE, na.omit("n/a"))
+bac <- getSymbols("BAC", src = "yahoo", from = "2013-01-01", to = "2023-03-31", auto.assign = FALSE, na.omit("n/a"))
+ms <- getSymbols("MS", src = "yahoo", from = "2013-01-01", to = "2023-03-31", auto.assign = FALSE, na.omit("n/a"))
+wf <- getSymbols("WFC", src = "yahoo", from = "2013-01-01", to = "2023-03-31", auto.assign = FALSE, na.omit("n/a"))
+schawb <- getSymbols("SCHW", src = "yahoo", from = "2013-01-01", to = "2023-03-31", auto.assign = FALSE, na.omit("n/a"))
+# taking a peek at VIX
+
+vix <- getSymbols("^VIX", src = "yahoo", from = "2013-01-01", to = "2023-03-31", auto.assign = FALSE, na.omit("n/a"))
+summary(vix)
+
+grid.table(summary(vix))
+
+vixy <- dygraph(vix$VIX.Close, main = " VIX") %>%
+  dyAxis("y", label = "vol", gridLineColor = "lightgrey")
+
+vixy
+
+
+# Now we will use a function of returns  for the first differences of a t x q matrix of data
+returns = function(Y){
+  len = nrow(Y)
+  yDif = Y[2:len, ] / Y[1:len-1, ] - 1
+}
+
+
+# Merging the stocks
+
+
+stock_data <- data.frame(jp$JPM.Close, bac$BAC.Close, ms$MS.Close,
+                         wf$WFC.Close, schawb$SCHW.Close)
+stock_Price = as.matrix( stock_data[ , 1:5] )
+str(stock_data)
+
+# Before we combine these into a portfolio, graph the individual returns
+# and see if anything jumps out as unusual. It looks like something 
+
+# Get the Stock Returns
+stock_Returns = returns(stock_Price)
+str(stock_Returns)
+summary(stock_Returns)
+
+# checking for correlation
+
+cor1 <- cor(stock_Returns)
+grid.table(cor1)
+# the stocks show high levels of correlation, this means, that they are...
+# highly exposed to market movements...
+
+#allocating weights
+x <- c(0.20, 0.20, 0.20, 0.20, 0.20)
+# Now use the built in PerformanceAnalytics function Return.portfolio
+# to calculate the monthly returns on the portfolio,
+
+portfolio_daily_returns <- Return.portfolio(stock_Returns, weights = x)
+summary(portfolio_daily_returns)
+grid.table(summary(portfolio_daily_returns))
+cor(portfolio_daily_returns)
+var(portfolio_daily_returns)
+
+
+# Use dygraphs to chart the portfolio monthly returns.
+# Use dygraphs to chart the portfolio monthly returns.
+dygraph(portfolio_daily_returns, main = "Portfolio Daily Returns") %>%
+  dyAxis("y", label = "%", gridLineColor = "lightgrey")
+
+
+# Add the wealth.index = TRUE argument and, instead of monthly returns,
+# the function will return the growth of $1 invested in the portfolio.
+dollar_growth <- Return.portfolio(stock_Returns, weights = x, 
+                                  wealth.index = TRUE)
+
+# Use dygraphs to chart the growth of $1 in the portfolio.
+dygraph(dollar_growth, main = "Growth of $1 Invested in Portfolio (US/CA)") %>%
+  dyAxis("y", label = "$", gridLineColor = "lightgrey")
+
+# normality analysis, kurtosis and skewness analysis
+
+library(moments)
+skewness(portfolio_daily_returns)
+summary(portfolio_daily_returns)
+# the returns are approximately symmetric
+# In which is close to a normal distribution?
+
+kurtosis(portfolio_daily_returns)
+# It appears that we have a Leptokurtic dist. 
+# This can be easily seen from the histogram we used.
+# Moreover, this is also evident by K being greater than 3. 
+# This means there are many outliers in our DS
+# This means that our distribution is close to an uniform distribution.
+# But let's see it further...
+
+# Visualizing 
+
+qplot(portfolio_daily_returns, geom = "histogram")
+hist(portfolio_daily_returns, main="", breaks=20, freq=FALSE, col="grey")
+
+# testing
+
+library(tseries)
+
+# stationary
+
+#  Dickey Fuller test
+adf.test(portfolio_daily_returns)
+
+#conduct Jarque-Bera test
+jarque.bera.test(portfolio_daily_returns)
+
+# The JBT shows an interesting pattern...
+# From the Leptokurtic distribution we can see there are many outliers in the returns
+# Moreover, the summary stats show that the 1Q, Median, mean, and 3Q range close zero. 
+# Although, the max is 0.18...
+# Therefore, based on these observations we can see a resemblance to a uniform distribution ...
+# Since the JBT rejects the null hypothesis for normality
+
+# next we are going to compare the portfolio to a benchmark
+# the benchmark will be the NYSE
+# Here we will re upload the stock data with a different function
+# Therefore, clean the global environment b4 proceeding to this part
+# for some reason, the benchmark analysis doesn't work with the previous codes
+# this is why I tried a different approach here...
+# Daily  returns function
+daily_returns <- function(ticker, base_year)
+{
+  # Obtain stock price data from Yahoo! Finance
+  stock <- getSymbols(ticker, src = "yahoo", auto.assign = FALSE) 
+  # Remove missing values
+  stock <- na.omit(stock)
+  # Keep only adjusted closing stock prices
+  stock <- stock[, 6]
+  
+  # Confine our observations to begin at the base year and end at the last available trading day
+  horizon <- paste0(as.character(base_year), "/", as.character(Sys.Date()))
+  stock <- stock[horizon]
+  
+  # Calculate monthly arithmetic returns
+  data <- periodReturn(stock, period = "daily", type = "arithmetic")
+  
+  # Assign to the global environment to be accessible
+  assign(ticker, data, envir = .GlobalEnv)
+}
+
+# Call our function for each stock
+daily_returns("JPM", 2013)
+daily_returns("BAC", 2013)
+daily_returns("MS", 2013)
+daily_returns("WFC", 2013)
+daily_returns("SCHW", 2013)
+
+# Get NYSE Data
+daily_returns("^NYA", 2013)
+
+# Merge all the data and rename columns
+returns <- merge.xts(JPM,BAC,MS, WFC, SCHW,`^NYA`)
+colnames(returns) <- c("JPM","BAC","MS","WFC","SCHW","^NYA")
+
+# Assign weights
+wts <- c(1/5, 1/5, 1/5, 1/5, 1/5)
+
+# Construct a portfolio using our returns object and weights
+# Only select first three columns to isolate our individual stock data
+portfolio_returns <- Return.portfolio(R = returns[,1:5], weights = wts, wealth.index = TRUE)
+
+
+# isolating the NYSE data
+benchmark_returns <- Return.portfolio(R = returns[,6], wealth.index = TRUE)
+
+# Merge both (portfolio and benchmark)
+
+comp <- merge.xts(portfolio_returns, benchmark_returns)
+colnames(comp) <- c("Portfolio", "Benchmark")
+
+
+# Build an interactive graph to compare performance
+benchy <- dygraph(comp, main = " Ptf vs. Benchmark") %>%
+  dyAxis("y", label = "Amount ($)", gridLineColor = "lightgrey")
+benchy
+
+
+#
+# getting the Rf
+# Here we can use the same vectors we uploaded in the beginning
+# Clean the global environment from the benchmark analysis b4 proceeding and upload everything...
+# until the monthly portfolio codes
+
+rf_us <- getSymbols('DGS10', src = 'FRED')
+head(DGS1MO)
+summary(DGS1MO)
+
+# Sharpe Ratio ptf
+
+
+sharpe_ratio <- round(
+  SharpeRatio(portfolio_daily_returns, Rf = .01258), 4
+)
+sharpe_ratio
+
+## Monte Carlo 
+# to do this analysis...
+# clear the enviroment from the workspace...
+# and upload the portfolio from Stocks_returns
+
+mc_rep = 1000 # Number of Monte Carlo Simulations
+training_days = 100
+
+
+# Suppose we invest our money evenly among all four assets 
+# We use the prices to find the number of shares each stock that we buy
+portfolio_Weights = t(as.matrix(rep(1/ncol(stock_Returns), ncol(stock_Returns))))
+print(portfolio_Weights)
+
+# Get the Variance Covariance Matrix of Stock Returns
+coVarMat = cov(stock_Returns)
+miu = colMeans(stock_Returns)
+# Extend the vector to a matrix
+Miu = matrix(rep(miu, training_days), nrow = 5)
+
+# Initializing simulated 100 day portfolio returns
+portfolio_Returns_100_m = matrix(0, training_days, mc_rep)
+
+set.seed(200)
+for (i in 1:mc_rep) {
+  Z = matrix ( rnorm( dim(stock_Returns)[2] * training_days ), ncol = training_days )
+  # Lower Triangular Matrix from our Choleski Factorization
+  L = t( chol(coVarMat) )
+  # Calculate stock returns for each day
+  daily_Returns = Miu + L %*% Z  
+  # Calculate portfolio returns for 100 days
+  portfolio_Returns_100 = cumprod( portfolio_Weights %*% daily_Returns + 1 )
+  # Add it to the monte-carlo matrix
+  portfolio_Returns_100_m[,i] = portfolio_Returns_100;
+}
+
+# Visualising result
+x_axis = rep(1:training_days, mc_rep)
+y_axis = as.vector(portfolio_Returns_100_m-1)
+plot_data = data.frame(x_axis, y_axis)
+mc1 <- ggplot(data = plot_data, aes(x = x_axis, y = y_axis)) + geom_path(col = 'darkblue', size = 0.1) +
+  xlab('Days') + ylab('Portfolio Returns') + 
+  ggtitle('')+
+  theme(plot.title = element_text(hjust = 0.5))
+mc1
+
+
+# Porfolio Returns statistics on the 100th day.
+Avg_Portfolio_Returns = mean(portfolio_Returns_100_m[100,]-1)
+SD_Portfolio_Returns = sd(portfolio_Returns_100_m[100,]-1)
+Median_Portfolio_Returns = median(portfolio_Returns_100_m[100,]-1)
+print(c(Avg_Portfolio_Returns,SD_Portfolio_Returns,Median_Portfolio_Returns))
+
+# calculating the standard error
+sample.n <- length(portfolio_Returns_100_m[100,]-1)
+sample.se <-SD_Portfolio_Returns/sqrt(sample.n)
+print(sample.se)
+
+# calculating the t score
+
+alpha = 0.05
+degrees.freedom = sample.n - 1
+t.score = qt(p=alpha/2, df=degrees.freedom, lower.tail=F)
+
+print(t.score)
+
+
+# Marging of error
+
+margin.error <- t.score * sample.se
+
+# confidence +-
+
+lower.bound <- Avg_Portfolio_Returns - margin.error
+upper.bound <- Avg_Portfolio_Returns + margin.error
+
+print(c(lower.bound, upper.bound))
+
+# cumulative returns
+
+illi <- Return.cumulative(portfolio_daily_returns, geometric = TRUE)
+illi
+# GARCH
+
+
+#install.packages("rugarch")
+library(rugarch)
+
+#install.packages("qrmdata")
+library(qrmdata)
+
+p <- portfolio_returns
+r <- na.omit(diff(log(p))* 100)
+
+#
+
+AR.GARCH.ptf.Norm.spec <- ugarchspec(variance.model = list(model = "sGARCH", 
+                                                             garchOrder = c(1, 1)), mean.model = list(armaOrder = c(1, 
+                                                                                                                    0), include.mean = TRUE), distribution.model = "norm")
+fit.ptf.norm <- ugarchfit(spec = AR.GARCH.ptf.Norm.spec, 
+                            data = r)
+
+# looking at the VAR limits at 99%
+
+plot(fit.ptf.norm, which = 2)
+
+# generating a panel of plots
+
+par(mfrow = c(2,2))
+# acf od abs ... shows serial correlation
+plot(fit.ptf.norm, which = 6)
+
+# leptokurtosis of standard residuals
+plot(fit.ptf.norm, which = 9)
+# normal assumption not supported
+
+# acf of standardized residuals -
+# shows AR dynamics do a reasonable
+# job of explaining conditional mean
+plot(fit.ptf.norm, which = 10)
+
+## acf of squared standardized
+## residuals - shows GARCH dynamics do
+## a reasonable job of explaining
+## conditional sd
+plot(fit.ptf.norm, which = 11)
+par(mfrow = c(1, 1))
+
+
+# Fit an AR(1) - Garch(1,1) model w/
+# student t's innovations
+
+AR.GARCH.ptf.T.spec <- ugarchspec(variance.model = list(model = "sGARCH", 
+                                                          garchOrder = c(1, 1)), mean.model = list(armaOrder = c(1, 
+                                                                                                                 0), include.mean = TRUE), distribution.model = "std")
+fit.ptf.t <- ugarchfit(spec = AR.GARCH.ptf.T.spec, 
+                         data = r)
+par(mfrow = c(2,2))
+plot(fit.ptf.t, which = 6)
+plot(fit.ptf.t, which = 9)
+plot(fit.ptf.t, which = 10)
+plot(fit.ptf.t, which = 11)
+par(mfrow = c(1, 1))
+coef(fit.ptf.t)
+# mu shows the LR av return of the ptf, that is close to 10%
+# ar1 is the impact of one day lagged return on today's return, we can see that daily returns are much affected
+# omega is the LR variance on the ptf return: it does show plenty of variance compared to the ptf returns
+# alpha1 is the impact of lagged squared variance on today's return: also plenty 
+# shape is the degrees of freedom...
+# The bigger, the thicker the tail: lastly, we see a thick tail in this distribution... 
+# the patterns of a platykurtic distribution (seen b4) continue to show...
+
+plot(sigma(fit.ptf.t))
+plot(quantile(fit.ptf.t, 0.99))
+
+#testing the residuals 
+z.hat <- residuals(fit.ptf.t, standardize = TRUE)
+plot(z.hat)
+hist(z.hat)
+hist(z.hat, breaks=20, freq=FALSE, col="grey")
+
+mean(z.hat)
+var(z.hat)
+skewness(z.hat)
+kurtosis(z.hat)
+shapiro.test(as.numeric(z.hat))
+jarque.bera.test(as.numeric(z.hat))
+
+# we have a left skew
+# thick tails
+# potentially large losses
+# more negatives than positive
+# both standard tests indicate rejection of the null hypothesis...
+# that the series is normally distributed
+
+
